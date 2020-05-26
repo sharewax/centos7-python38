@@ -7,7 +7,7 @@
 # pybasever without the dot:
 %global pyshortver 38
 
-Name: python3
+Name: python38u
 Summary: Interpreter of the Python programming language
 URL: https://www.python.org/
 
@@ -17,7 +17,7 @@ URL: https://www.python.org/
 #global prerel ...
 %global upstream_version %{general_version}%{?prerel}
 Version: %{general_version}%{?prerel:~%{prerel}}
-Release: 1%{?dist}
+Release: 1a.cb%{?dist}
 License: Python
 
 
@@ -27,7 +27,6 @@ License: Python
 
 # Note that the bcond macros are named for the CLI option they create.
 # "%%bcond_without" means "ENABLE by default and create a --without option"
-
 
 # Flat package, i.e. python36, python37, python38 for tox etc.
 # WARNING: This also influences the main_python bcond below.
@@ -54,11 +53,11 @@ License: Python
 #   IMPORTANT: When bootstrapping, it's very likely the wheels for pip and
 #   setuptools are not available. Turn off the rpmwheels bcond until
 #   the two packages are built with wheels to get around the issue.
-%bcond_with bootstrap
+%bcond_without bootstrap
 
 # Whether to use RPM build wheels from the python-{pip,setuptools}-wheel package
 # Uses upstream bundled prebuilt wheels otherwise
-%bcond_without rpmwheels
+%bcond_with rpmwheels
 
 # Expensive optimizations (mainly, profile-guided optimizations)
 %bcond_without optimizations
@@ -93,6 +92,12 @@ License: Python
 %bcond_with valgrind
 %endif
 
+# Support to statically compile sqlite into the sqlite module
+%if %{defined el6}
+%bcond_without static_sqlite
+%else
+%bcond_with static_sqlite
+%endif
 
 # =====================
 # General global macros
@@ -134,11 +139,41 @@ License: Python
 %global py_INSTSONAME_optimized libpython%{LDVERSION_optimized}.so.%{py_SOVERSION}
 %global py_INSTSONAME_debug     libpython%{LDVERSION_debug}.so.%{py_SOVERSION}
 
+%if %{defined el8}
 # Disable automatic bytecompilation. The python3 binary is not yet be
 # available in /usr/bin when Python is built. Also, the bytecompilation fails
 # on files that test invalid syntax.
 %undefine py_auto_byte_compile
 
+%else
+# We want to byte-compile the .py files within the packages using the new
+# python3 binary.
+#
+# Unfortunately, rpmbuild's infrastructure requires us to jump through some
+# hoops to avoid byte-compiling with the system python 2 version:
+#   /usr/lib/rpm/redhat/macros sets up build policy that (amongst other things)
+# defines __os_install_post.  In particular, "brp-python-bytecompile" is
+# invoked without an argument thus using the wrong version of python
+# (/usr/bin/python, rather than the freshly built python), thus leading to
+# numerous syntax errors, and incorrect magic numbers in the .pyc files.  We
+# thus override __os_install_post to avoid invoking this script:
+%global __os_install_post /usr/lib/rpm%{?rhel:/redhat}/brp-compress \
+  %{!?__debug_package:/usr/lib/rpm%{?rhel:/redhat}/brp-strip %{__strip}} \
+  %{!?__debug_package:/usr/lib/rpm%{?rhel:/redhat}/brp-strip-comment-note %{__strip} %{__objdump}} \
+  /usr/lib/rpm%{?rhel:/redhat}/brp-strip-static-archive %{__strip} \
+  /usr/lib/rpm%{?rhel:/redhat}/brp-python-hardlink
+# to remove the invocation of brp-python-bytecompile, whilst keeping the
+# invocation of brp-python-hardlink (since this should still work for python3
+# pyc/pyo files)
+%endif
+
+# Bundle latest wheels of setuptools and/or pip.
+#global setuptools_version 41.0.1
+#global pip_version 19.1.1
+
+# Versions of sqlite to use if statically linking
+%global sqlite_year 2020
+%global sqlite_version 3310100
 
 # =======================
 # Build-time requirements
@@ -146,36 +181,41 @@ License: Python
 
 # (keep this list alphabetized)
 
-BuildRequires: autoconf
+BuildRequires: autoconf >= 2.69
 BuildRequires: bluez-libs-devel
 BuildRequires: bzip2
 BuildRequires: bzip2-devel
 BuildRequires: desktop-file-utils
+%if %{undefined el8}
+BuildRequires: epel-rpm-macros
+%endif
 BuildRequires: expat-devel
 
 BuildRequires: findutils
-BuildRequires: gcc-c++
+BuildRequires: %{!?el8:devtoolset-8-}gcc-c++
 %if %{with gdbm}
 BuildRequires: gdbm-devel
 %endif
-BuildRequires: glibc-all-langpacks
 BuildRequires: glibc-devel
 BuildRequires: gmp-devel
 BuildRequires: gnupg2
+%if %{undefined el6}
 BuildRequires: libappstream-glib
+%endif
 BuildRequires: libffi-devel
-BuildRequires: libnsl2-devel
-BuildRequires: libtirpc-devel
 BuildRequires: libGL-devel
 BuildRequires: libuuid-devel
 BuildRequires: libX11-devel
+BuildRequires: make
 BuildRequires: ncurses-devel
 
-BuildRequires: openssl-devel
+BuildRequires: %{?el6:openresty-}openssl-devel
 BuildRequires: pkgconfig
 BuildRequires: readline-devel
-BuildRequires: redhat-rpm-config >= 127
-BuildRequires: sqlite-devel
+BuildRequires: redhat-rpm-config
+%if %{without static_sqlite}
+BuildRequires: sqlite-devel >= 3.7.3
+%endif
 BuildRequires: gdb
 
 BuildRequires: tar
@@ -193,7 +233,7 @@ BuildRequires: zlib-devel
 BuildRequires: /usr/bin/dtrace
 
 # workaround http://bugs.python.org/issue19804 (test_uuid requires ifconfig)
-BuildRequires: /usr/sbin/ifconfig
+BuildRequires: %{!?el6:/usr}/sbin/ifconfig
 
 # For %%python_provide
 BuildRequires: python-rpm-macros
@@ -216,6 +256,11 @@ Source0: %{url}ftp/python/%{general_version}/Python-%{upstream_version}.tar.xz
 Source1: %{url}ftp/python/%{general_version}/Python-%{upstream_version}.tar.xz.asc
 Source2: %{url}static/files/pubkeys.txt
 
+# Supply an RPM macro "py_byte_compile" for the python3-devel subpackage
+# to enable specfiles to selectively byte-compile individual files and paths
+# with different Python runtimes as necessary:
+Source3: macros.pybytecompile%{pybasever}
+
 # A simple script to check timestamps of bytecode files
 # Run in check section with Python that is currently being built
 # Originally written by bkabrda
@@ -226,6 +271,22 @@ Source10: idle3.desktop
 
 # AppData file for idle3
 Source11: idle3.appdata.xml
+
+# Supply various useful macros for building python 3.X modules:
+#  __python3Xu, python3Xu_sitelib, python3Xu_sitearch
+Source12: macros.python%{pybasever}
+
+%if %{defined setuptools_version}
+Source20: https://files.pythonhosted.org/packages/py2.py3/s/setuptools/setuptools-%{setuptools_version}-py2.py3-none-any.whl
+%endif
+%if %{defined pip_version}
+Source21: https://files.pythonhosted.org/packages/py2.py3/p/pip/pip-%{pip_version}-py2.py3-none-any.whl
+%endif
+
+%if %{with static_sqlite}
+# The source files for the sqlite amalgamation to staticly compile against
+Source30: https://www.sqlite.org/%{sqlite_year}/sqlite-amalgamation-%{sqlite_version}.zip
+%endif
 
 # 00001 #
 # Fixup distutils/unixccompiler.py to remove standard library path from rpath:
@@ -270,6 +331,16 @@ Patch274: 00274-fix-arch-names.patch
 # Downstream only: only used when building RPM packages
 # Ideally, we should talk to upstream and explain why we don't want this
 Patch328: 00328-pyc-timestamp-invalidation-mode.patch
+
+# 00500 #
+# Set the correct minimum version for the check trace callback test.
+# https://bugs.python.org/issue30126
+Patch500: 00500-fix-sqlite-test-minimum-version.patch
+
+# 00501 #
+# Don't try to detect sqlite, instead assume the amalgamation files are
+# directly included inside the sqlite module's folder.
+Patch501: 00501-static-sqlite.patch
 
 # (New patches go here ^^^)
 #
@@ -322,17 +393,6 @@ Obsoletes: python%{pyshortver}
 Recommends: %{_bindir}/python
 %endif
 
-# In Fedora 31, /usr/bin/pydoc was moved here from Python 2.
-# Ideally we'd have an explicit conflict with "/usr/bin/pydoc < 3",
-# but file provides aren't versioned and the file moved across packages.
-# Instead, we rely on the conflict in python3-libs.
-
-# Previously, this was required for our rewheel patch to work.
-# This is technically no longer needed, but we keep it recommended
-# for the developer experience.
-Recommends: python3-setuptools
-Recommends: python3-pip
-
 # This prevents ALL subpackages built from this spec to require
 # /usr/bin/python3*. Granularity per subpackage is impossible.
 # It's intended for the libs package not to drag in the interpreter, see
@@ -384,38 +444,17 @@ This package contains /usr/bin/python - the "python" command that runs Python 3.
 %package libs
 Summary:        Python runtime libraries
 
+%if %{without static_sqlite}
+Requires: sqlite >= 3.7.3
+%endif
+
 %if %{with rpmwheels}
 Requires: python-setuptools-wheel
 Requires: python-pip-wheel
 %else
-Provides: bundled(python3-pip) = 19.2.3
-Provides: bundled(python3-setuptools) = 41.2.0
+Provides: bundled(%{name}-pip) = %{?pip_version:%{pip_version}}%{!?pip_version:19.2.3}
+Provides: bundled(%{name}-setuptools) = %{?setuptools_version:%{setuptools_version}}%{!?setuptools_version:41.2.0}
 %endif
-
-%{?python_provide:%python_provide python3-libs}
-
-# There are files in the standard library that have python shebang.
-# We've filtered the automatic requirement out so libs are installable without
-# the main package. This however makes it pulled in by default.
-# See https://bugzilla.redhat.com/show_bug.cgi?id=1547131
-Recommends: %{name}%{?_isa} = %{version}-%{release}
-
-# tkinter is part of the standard library,
-# but it is torn out to save an unwanted dependency on tk and X11.
-# we recommend it when tk is already installed (for better UX)
-Recommends: (%{name}-tkinter%{?_isa} = %{version}-%{release} if tk%{?_isa})
-
-# https://fedoraproject.org/wiki/Changes/Move_usr_bin_python_into_separate_package
-# In Fedora 31, several "unversioned" files like /usr/bin/pydoc and all the
-# "unversioned" provides were moved from python2 to python3.
-# So, newer python3 packages need to conflict with old Python 2 builds that
-# still provided unversioned Python.
-# Since all python packages, new and old, have versioned requires on
-# python?-libs, we do it here:
-Conflicts: python-libs < 3
-# (We explicitly conflict with python-libs and not python2-libs, so only the
-# old Python 2 builds that still provided unversioned Python are handled.)
-
 
 %description libs
 This package contains runtime libraries for use by Python:
@@ -428,13 +467,10 @@ This package contains runtime libraries for use by Python:
 Summary: Libraries and header files needed for Python development
 Requires: %{name} = %{version}-%{release}
 Requires: %{name}-libs%{?_isa} = %{version}-%{release}
-BuildRequires: python-rpm-macros
-# The RPM related dependencies bring nothing to a non-RPM Python developer
-# But we want them when packages BuildRequire python3-devel
-Requires: (python-rpm-macros if rpm-build)
-Requires: (python3-rpm-macros if rpm-build)
 
-%if %{without bootstrap}
+BuildRequires: python-rpm-macros
+
+%if %{without bootstrap} && %{with rpmwheels}
 # This is not "API" (packages that need setuptools should still BuildRequire it)
 # However some packages apparently can build both with and without setuptools
 # producing egg-info as file or directory (depending on setuptools presence).
@@ -442,21 +478,15 @@ Requires: (python3-rpm-macros if rpm-build)
 # installed when -devel is required.
 # See https://bugzilla.redhat.com/show_bug.cgi?id=1623914
 # See https://fedoraproject.org/wiki/Packaging:Directory_Replacement
-Requires: (python3-setuptools if rpm-build)
+Requires: %{name}-setuptools
 
-Requires: (python3-rpm-generators if rpm-build)
+Requires: %{name}-rpm-generators
 %endif
-
-%{?python_provide:%python_provide python3-devel}
 
 Provides: %{name}-2to3 = %{version}-%{release}
 Provides: 2to3 = %{version}-%{release}
 
 Conflicts: %{name} < %{version}-%{release}
-
-# In Fedora 31, several "unversioned" files were moved here from Python 2:
-# pygettext.py, msgfmt.py, python-config, python.pc
-Conflicts: python-devel < 3
 
 %description devel
 This package contains the header files and configuration needed to compile
@@ -473,16 +503,10 @@ Requires: %{name} = %{version}-%{release}
 Requires: %{name}-tkinter = %{version}-%{release}
 
 Provides: idle3 = %{version}-%{release}
-Provides: idle = %{version}-%{release}
 
 Provides: %{name}-tools = %{version}-%{release}
 Provides: %{name}-tools%{?_isa} = %{version}-%{release}
 Obsoletes: %{name}-tools < %{version}-%{release}
-
-# In Fedora 31, /usr/bin/idle was moved here from Python 2.
-Conflicts: python-tools < 3
-
-%{?python_provide:%python_provide python3-idle}
 
 %description idle
 IDLE is Python’s Integrated Development and Learning Environment.
@@ -501,19 +525,15 @@ configuration, browsers, and other dialogs.
 Summary: A GUI toolkit for Python
 Requires: %{name} = %{version}-%{release}
 
-%{?python_provide:%python_provide python3-tkinter}
-
 %description tkinter
 The Tkinter (Tk interface) library is a graphical user interface toolkit for
 the Python programming language.
 
 
 %package test
-Summary: The self-test suite for the main python3 package
+Summary: The self-test suite for the main %{name} package
 Requires: %{name} = %{version}-%{release}
 Requires: %{name}-libs%{?_isa} = %{version}-%{release}
-
-%{?python_provide:%python_provide python3-test}
 
 %description test
 The self-test suite for the Python interpreter.
@@ -537,13 +557,8 @@ Requires: %{name}-test%{?_isa} = %{version}-%{release}
 Requires: %{name}-tkinter%{?_isa} = %{version}-%{release}
 Requires: %{name}-idle%{?_isa} = %{version}-%{release}
 
-# In Fedora 31, /usr/bin/python-debug was moved here from Python 2.
-Conflicts: python-debug < 3
-
-%{?python_provide:%python_provide python3-debug}
-
 %description debug
-python3-debug provides a version of the Python runtime with numerous debugging
+%{name}-debug provides a version of the Python runtime with numerous debugging
 features enabled, aimed at advanced Python users such as developers of Python
 extension modules.
 
@@ -570,8 +585,8 @@ The debug runtime additionally supports debug builds of C-API extensions
 Requires: python-setuptools-wheel
 Requires: python-pip-wheel
 %else
-Provides: bundled(python3-pip) = 19.2.3
-Provides: bundled(python3-setuptools) = 41.2.0
+Provides: bundled(%{name}-pip) = %{?pip_version:%{pip_version}}%{!?pip_version:19.2.3}
+Provides: bundled(%{name}-setuptools) = %{?setuptools_version:%{setuptools_version}}%{!?setuptools_version:41.2.0}
 %endif
 
 # The description for the flat package
@@ -590,7 +605,10 @@ version once Python %{pybasever} is stable.
 # ======================================================
 
 %prep
+%if %{undefined rhel}
+# This macro doesn't exist in RHEL, we can try to add this later
 %gpgverify -k2 -s1 -d0
+%endif
 %setup -q -n Python-%{upstream_version}
 # Remove all exe files to ensure we are not shipping prebuilt binaries
 # note that those are only used to create Microsoft Windows installers
@@ -599,6 +617,24 @@ find -name '*.exe' -print -delete
 
 # Remove bundled libraries to ensure that we're using the system copy.
 rm -r Modules/expat
+
+%if %{defined setuptools_version}
+sed -r -e '/^_SETUPTOOLS_VERSION =/ s/"[0-9.]+"/"%{setuptools_version}"/' -i Lib/ensurepip/__init__.py
+rm Lib/ensurepip/_bundled/setuptools-*.whl
+cp -a %{SOURCE20} Lib/ensurepip/_bundled/
+%endif
+%if %{defined pip_version}
+sed -r -e '/^_PIP_VERSION =/ s/"[0-9.]+"/"%{pip_version}"/' -i Lib/ensurepip/__init__.py
+rm Lib/ensurepip/_bundled/pip-*.whl
+cp -a %{SOURCE21} Lib/ensurepip/_bundled/
+%endif
+
+%if %{with static_sqlite}
+# Copy the sqlite amalgamation sources into the sqlite module's folder
+unzip %{SOURCE30}
+cp sqlite-amalgamation-%{sqlite_version}/sqlite3.c Modules/_sqlite/
+cp sqlite-amalgamation-%{sqlite_version}/sqlite3.h Modules/_sqlite/
+%endif
 
 #
 # Apply patches:
@@ -618,6 +654,11 @@ rm Lib/ensurepip/_bundled/*.whl
 %patch251 -p1
 %patch274 -p1
 %patch328 -p1
+%patch500 -p1
+
+%if %{with static_sqlite}
+%patch501 -p1
+%endif
 
 
 # Remove files that should be generated by the build
@@ -653,21 +694,15 @@ topdir=$(pwd)
 %endif
 
 # Set common compiler/linker flags
-# We utilize the %%extension_...flags macros here so users building C/C++
-# extensions with our python won't get all the compiler/linker flags used
-# in Fedora RPMs.
-# Standard library built here will still use the %%build_...flags,
-# Fedora packages utilizing %%py3_build will use them as well
-# https://fedoraproject.org/wiki/Changes/Python_Extension_Flags
-export CFLAGS="%{extension_cflags} -D_GNU_SOURCE -fPIC -fwrapv"
-export CFLAGS_NODIST="%{build_cflags} -D_GNU_SOURCE -fPIC -fwrapv%{?with_no_semantic_interposition: -fno-semantic-interposition}"
-export CXXFLAGS="%{extension_cxxflags} -D_GNU_SOURCE -fPIC -fwrapv"
+export CFLAGS="$RPM_OPT_FLAGS -D_GNU_SOURCE -fPIC -fwrapv"
+export CFLAGS_NODIST="$RPM_OPT_FLAGS -D_GNU_SOURCE -fPIC -fwrapv%{?with_no_semantic_interposition: -fno-semantic-interposition}"
+export CXXFLAGS="$RPM_OPT_FLAGS -D_GNU_SOURCE -fPIC -fwrapv"
 export CPPFLAGS="$(pkg-config --cflags-only-I libffi)"
-export OPT="%{extension_cflags} -D_GNU_SOURCE -fPIC -fwrapv"
+export OPT="$RPM_OPT_FLAGS -D_GNU_SOURCE -fPIC -fwrapv"
 export LINKCC="gcc"
 export CFLAGS="$CFLAGS $(pkg-config --cflags openssl)"
-export LDFLAGS="%{extension_ldflags} -g $(pkg-config --libs-only-L openssl)"
-export LDFLAGS_NODIST="%{build_ldflags}%{?with_no_semantic_interposition: -fno-semantic-interposition} -g $(pkg-config --libs-only-L openssl)"
+export LDFLAGS="$RPM_LD_FLAGS %{?el6:-Wl,-rpath,/usr/local/openresty/openssl/lib} -g $(pkg-config --libs-only-L openssl)"
+export LDFLAGS_NODIST="$RPM_LD_FLAGS %{?el6:-Wl,-rpath,/usr/local/openresty/openssl/lib}%{?with_no_semantic_interposition: -fno-semantic-interposition} -g $(pkg-config --libs-only-L openssl)"
 
 # We can build several different configurations of Python: regular and debug.
 # Define a common function that does one build:
@@ -697,6 +732,9 @@ BuildPython() {
   --enable-loadable-sqlite-extensions \
   --with-dtrace \
   --with-lto \
+%if %{defined el6}
+  --with-openssl=/usr/local/openresty/openssl \
+%endif
   --with-ssl-default-suites=openssl \
 %if %{with valgrind}
   --with-valgrind \
@@ -862,9 +900,11 @@ install -D -m 0644 Lib/idlelib/Icons/idle_48.png %{buildroot}%{_datadir}/icons/h
 desktop-file-install --dir=%{buildroot}%{_datadir}/applications %{SOURCE10}
 
 # Install and validate appdata file
-mkdir -p %{buildroot}%{_metainfodir}
-cp -a %{SOURCE11} %{buildroot}%{_metainfodir}
-appstream-util validate-relax --nonet %{buildroot}%{_metainfodir}/idle3.appdata.xml
+mkdir -p %{buildroot}%{_datadir}/appdata
+cp -a %{SOURCE11} %{buildroot}%{_datadir}/appdata
+%if %{undefined el6}
+appstream-util validate-relax --nonet %{buildroot}%{_datadir}/appdata/idle3.appdata.xml
+%endif
 %endif
 
 # Make sure distutils looks at the right pyconfig.h file
@@ -923,23 +963,21 @@ find . -name "*~" -exec rm -f {} \;
 # Do bytecompilation with the newly installed interpreter.
 # This is similar to the script in macros.pybytecompile
 # compile *.pyc
-# Python CMD line options:
-# -s - don't add user site directory to sys.path
-# -B - don't write .pyc files on import
-# Compileall2 CMD line options:
-# -f - force rebuild even if timestamps are up to date
-# -o - optimization levels to run compilation with
-# -s - part of path to left-strip from path to source file (buildroot)
-# -p - path to add as prefix to path to source file (/ to make it absolute)
-LD_LIBRARY_PATH="%{buildroot}%{dynload_dir}/:%{buildroot}%{_libdir}" \
-PYTHONPATH="%{_rpmconfigdir}/redhat" %{buildroot}%{_bindir}/python%{pybasever} -s -B -m \
-compileall2 -f %{_smp_mflags} -o 0 -o 1 -o 2 -s %{buildroot} -p / %{buildroot} || :
+find %{buildroot} -type f -a -name "*.py" -print0 | \
+    LD_LIBRARY_PATH="%{buildroot}%{dynload_dir}/:%{buildroot}%{_libdir}" \
+    PYTHONPATH="%{buildroot}%{_libdir}/python%{pybasever} %{buildroot}%{_libdir}/python%{pybasever}/site-packages" \
+    xargs -0 %{buildroot}%{_bindir}/python%{pybasever} -O -c 'import py_compile, sys; [py_compile.compile(f, dfile=f.partition("%{buildroot}")[2], optimize=opt) for opt in range(3) for f in sys.argv[1:]]' || :
 
 # Since we have pathfix.py in bindir, this is created, but we don't want it
 rm -rf %{buildroot}%{_bindir}/__pycache__
 
 # Fixup permissions for shared libraries from non-standard 555 to standard 755:
 find %{buildroot} -perm 555 -exec chmod 755 {} \;
+
+# Install macros for rpm:
+mkdir -p %{buildroot}/%{_rpmmacrodir}
+install -m 644 %{SOURCE3} %{buildroot}/%{_rpmmacrodir}
+install -m 644 %{SOURCE12} %{buildroot}/%{_rpmmacrodir}
 
 # Create "/usr/bin/python3-debug", a symlink to the python3 debug binary, to
 # avoid the user having to know the precise version and ABI flags.
@@ -1040,7 +1078,7 @@ CheckPython() {
   LD_LIBRARY_PATH=$ConfDir $ConfDir/python -m test.pythoninfo
 
   # Run the upstream test suite
-  # --timeout=1800: kill test running for longer than 30 minutes
+  # --timeout=600: kill test running for longer than 10 minutes
   # test_gdb skipped on s390x:
   #   https://bugzilla.redhat.com/show_bug.cgi?id=1678277
   # test_gdb skipped everywhere:
@@ -1049,7 +1087,7 @@ CheckPython() {
   #   distutils.tests.test_bdist_rpm tests fail when bootstraping the Python
   #   package: rpmbuild requires /usr/bin/pythonX.Y to be installed
   LD_LIBRARY_PATH=$ConfDir $ConfDir/python -m test.regrtest \
-    -wW --slowest -j0 --timeout=1800 \
+    -wW --slowest -j0 --timeout=600 \
     %if %{with bootstrap}
     -x test_distutils \
     %endif
@@ -1357,6 +1395,8 @@ CheckPython optimized
 %{_libdir}/pkgconfig/python-%{LDVERSION_optimized}-embed.pc
 %{_libdir}/pkgconfig/python-%{pybasever}.pc
 %{_libdir}/pkgconfig/python-%{pybasever}-embed.pc
+%{_rpmmacrodir}/macros.pybytecompile%{pybasever}
+%{_rpmmacrodir}/macros.python%{pybasever}
 
 
 %if %{without flatpackage}
@@ -1561,6 +1601,9 @@ CheckPython optimized
 # ======================================================
 
 %changelog
+* Thu May 21 2020 Timothy Lusk <tlusk@carbonblack.com> - 3.8.3-1a.cb
+- Merge upstream Fedora 3.8.3-1 changes
+
 * Fri May 15 2020 Miro Hrončok <mhroncok@redhat.com> - 3.8.3-1
 - Rebased to 3.8.3 final
 
@@ -1569,6 +1612,9 @@ CheckPython optimized
 
 * Fri Feb 28 2020 Miro Hrončok <mhroncok@redhat.com> - 3.8.2-2
 - Enable https://fedoraproject.org/wiki/Changes/PythonNoSemanticInterpositionSpeedup on power and arm
+
+* Thu Feb 27 2020 Timothy Lusk <tlusk@carbonblack.com> - 3.8.2-1a.cb
+- Merge upstream Fedora 3.8.2-1 changes
 
 * Wed Feb 26 2020 Miro Hrončok <mhroncok@redhat.com> - 3.8.2-1
 - Rebased to 3.8.2 final
@@ -1579,6 +1625,11 @@ CheckPython optimized
 * Mon Feb 24 2020 Marcel Plch <mplch@redhat.com> - 3.8.2~rc2-1
 - Rebased to 3.8.2rc2
 
+* Thu Feb 20 2020 Timothy Lusk <tlusk@carbonblack.com> - 3.8.1-2a.cb
+- Merge upstream Fedora 3.8.1-2 changes
+- Staticly link sqlite 3.31.1 into the sqlite module for EL6, the version provided
+  by the OS is too old.
+
 * Wed Feb 12 2020 Miro Hrončok <mhroncok@redhat.com> - 3.8.2~rc1-1
 - Rebased to 3.8.2rc1
 
@@ -1587,6 +1638,12 @@ CheckPython optimized
 - ctypes: Disable checks for union types being passed by value (#1794572)
 - Temporarily disable https://fedoraproject.org/wiki/Changes/PythonNoSemanticInterpositionSpeedup
   on ppc64le and armv7hl (#1795575)
+
+* Tue Jan 07 2020 Timothy Lusk <tlusk@carbonblack.com> - 3.8.1-1b.cb
+- Remove python-rpm-macros as a dependency of the devel package
+
+* Sun Jan 05 2020 Timothy Lusk <tlusk@carbonblack.com> - 3.8.1-1a.cb
+- Merge upstream 3.8.1 changes
 
 * Thu Dec 19 2019 Miro Hrončok <mhroncok@redhat.com> - 3.8.1-1
 - Update to Python 3.8.1
@@ -1601,8 +1658,20 @@ CheckPython optimized
 * Thu Nov 28 2019 Miro Hrončok <mhroncok@redhat.com> - 3.8.0-2
 - Recommend python3-tkinter when tk is installed
 
+* Thu Oct 24 2019 Timothy Lusk <tlusk@carbonblack.com> - 3.8.0-1a.cb
+- Merge upstream 3.8.0 changes
+
 * Mon Oct 14 2019 Miro Hrončok <mhroncok@redhat.com> - 3.8.0-1
 - Update to Python 3.8.0 final
+
+* Thu Oct 10 2019 Timothy Lusk <tlusk@carbonblack.com> - 3.7.4-5b.cb
+- Add support for CentOS 8
+
+* Tue Oct 08 2019 Timothy Lusk <tlusk@carbonblack.com> - 3.7.4-5b.cb
+- Security fix for CVE-2019-16056 and CVE-2019-16935
+
+* Mon Oct 07 2019 Timothy Lusk <tlusk@carbonblack.com> - 3.7.4-5a.cb
+- Merge upstream 3.7.4 changes
 
 * Tue Oct 01 2019 Miro Hrončok <mhroncok@redhat.com> - 3.8.0~rc1-1
 - Rebased to Python 3.8.0rc1
@@ -1647,6 +1716,9 @@ CheckPython optimized
 
 * Tue Jun 25 2019 Miro Hrončok <mhroncok@redhat.com> - 3.7.4~rc1-1
 - Update to 3.7.4rc1
+
+* Sun Jun 23 2019 Timothy Lusk <tlusk@carbonblack.com> - 3.7.3-1.cb
+- Port from Fedora to RHEL 6/7
 
 * Tue May 07 2019 Charalampos Stratakis <cstratak@redhat.com> - 3.7.3-3
 - Fix handling of pre-normalization characters in urlsplit

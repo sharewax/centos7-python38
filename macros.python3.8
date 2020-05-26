@@ -1,0 +1,38 @@
+%__python38 /usr/bin/python3.8
+%python38_sitelib %(%{__python38} -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())")
+%python38_sitearch %(%{__python38} -c "from distutils.sysconfig import get_python_lib; print(get_python_lib(1))")
+%python38_version %(%{__python38} -c "import sys; sys.stdout.write(sys.version[:3])")
+%python38_version_nodots %(%{__python38} -c "import sys; sys.stdout.write(sys.version[:3].replace('.',''))")
+%py38dir %{_builddir}/python38-%{name}-%{version}-%{release}
+
+%py38_shbang_opts -s
+
+# Use the slashes after expand so that the command starts on the same line as
+# the macro
+%py38_build() %{expand:\\\
+  CFLAGS="%{optflags}" %{__python38} setup.py %{?py_setup_args} build --executable="%{__python38} %{py38_shbang_opts}" %{?*}
+  sleep 1
+}
+
+%py38_build_egg() %{expand:\\\
+  CFLAGS="%{optflags}" %{__python38} setup.py %{?py_setup_args} bdist_egg %{?*}
+  sleep 1
+}
+
+%py38_build_wheel() %{expand:\\\
+  CFLAGS="%{optflags}" %{__python38} setup.py %{?py_setup_args} bdist_wheel %{?*}
+  sleep 1
+}
+
+%py38_install() %{expand:\\\
+  CFLAGS="%{optflags}" %{__python38} setup.py %{?py_setup_args} install -O1 --skip-build --root %{buildroot} %{?*}
+}
+
+%py38_install_egg() %{expand:\\\
+  mkdir -p %{buildroot}%{python38_sitelib}
+  easy_install-%{python38_version} -m --prefix %{buildroot}%{_prefix} -Z dist/*-py%{python38_version}.egg %{?*}
+}
+
+%py38_install_wheel() %{expand:\\\
+  pip%{python38_version} install -I dist/%{1} --root %{buildroot} --strip-file-prefix %{buildroot}
+}

@@ -1,0 +1,10 @@
+--- a/Lib/sqlite3/test/hooks.py	2019-06-23 17:12:54.400266706 -0400
++++ b/Lib/sqlite3/test/hooks.py	2019-06-23 17:13:52.015084918 -0400
+@@ -249,6 +249,7 @@
+                         % (ascii(unicode_value), ', '.join(map(ascii, traced_statements))))
+ 
+     @unittest.skipIf(sqlite.sqlite_version_info < (3, 3, 9), "sqlite3_prepare_v2 is not available")
++    @unittest.skipIf(sqlite.sqlite_version_info < (3, 7, 14), "sqlite3_close_v2 is not available")
+     def CheckTraceCallbackContent(self):
+         # set_trace_callback() shouldn't produce duplicate content (bpo-26187)
+         traced_statements = []
