@@ -2,12 +2,16 @@
 # Top-level metadata
 # ==================
 
+#gdb issue, can't solve with some #hacks
+# for ignoring warning: Installed (but unpackaged) file(s)
+%define _unpackaged_files_terminate_build 0
+
 %global pybasever 3.8
 
 # pybasever without the dot:
 %global pyshortver 38
 
-Name: python38u
+Name: python%{pyshortver}
 Summary: Interpreter of the Python programming language
 URL: https://www.python.org/
 
@@ -17,7 +21,7 @@ URL: https://www.python.org/
 #global prerel ...
 %global upstream_version %{general_version}%{?prerel}
 Version: %{general_version}%{?prerel:~%{prerel}}
-Release: 1a.cb%{?dist}
+Release: 2%{?dist}
 License: Python
 
 
@@ -38,11 +42,7 @@ License: Python
 # Main Python, i.e. whether this is the main Python version in the distribution
 # that owns /usr/bin/python3 and other unique paths
 # Default: if this is a flatpackage -> it is not the main Python
-%if %{with flatpackage}
 %bcond_with main_python
-%else
-%bcond_without main_python
-%endif
 
 # When bootstrapping python3, we need to build setuptools.
 # but setuptools BR python3-devel and that brings in python3-rpm-generators;
@@ -168,8 +168,8 @@ License: Python
 %endif
 
 # Bundle latest wheels of setuptools and/or pip.
-#global setuptools_version 41.0.1
-#global pip_version 19.1.1
+#global setuptools_version 46.4.0
+#global pip_version 20.1.1
 
 # Versions of sqlite to use if statically linking
 %global sqlite_year 2020
@@ -192,7 +192,8 @@ BuildRequires: epel-rpm-macros
 BuildRequires: expat-devel
 
 BuildRequires: findutils
-BuildRequires: %{!?el8:devtoolset-8-}gcc-c++
+# fresh gcc, need to install from repo Centos 7 SCLo
+BuildRequires: %{!?el8:devtoolset-9-}gcc-c++
 %if %{with gdbm}
 BuildRequires: gdbm-devel
 %endif
@@ -232,8 +233,8 @@ BuildRequires: zlib-devel
 
 BuildRequires: /usr/bin/dtrace
 
-# workaround http://bugs.python.org/issue19804 (test_uuid requires ifconfig)
-BuildRequires: %{!?el6:/usr}/sbin/ifconfig
+# ifconfig for tests
+BuildRequires: net-tools
 
 # For %%python_provide
 BuildRequires: python-rpm-macros
@@ -390,7 +391,8 @@ Obsoletes: python%{pyshortver}
 # We recommend /usr/bin/python so users get it by default
 # Versioned recommends are problematic, and we know that the package requires
 # python3 back with fixed version, so we just use the path here:
-Recommends: %{_bindir}/python
+# CentOS RPM doesn't know nothing about Recommends, so Requires is using
+Requires: %{_bindir}/python
 %endif
 
 # This prevents ALL subpackages built from this spec to require
@@ -693,13 +695,17 @@ topdir=$(pwd)
 %global optimizations_flag "--disable-optimizations"
 %endif
 
+# Fresh GCC from Software Collections (devtoolset-9-gcc-c++)
+export CC="/opt/rh/devtoolset-9/root/usr/bin/gcc"
+export CXX="/opt/rh/devtoolset-9/root/usr/bin/g++"
+export LINKCC="/opt/rh/devtoolset-9/root/usr/bin/gcc"
+
 # Set common compiler/linker flags
 export CFLAGS="$RPM_OPT_FLAGS -D_GNU_SOURCE -fPIC -fwrapv"
 export CFLAGS_NODIST="$RPM_OPT_FLAGS -D_GNU_SOURCE -fPIC -fwrapv%{?with_no_semantic_interposition: -fno-semantic-interposition}"
 export CXXFLAGS="$RPM_OPT_FLAGS -D_GNU_SOURCE -fPIC -fwrapv"
 export CPPFLAGS="$(pkg-config --cflags-only-I libffi)"
 export OPT="$RPM_OPT_FLAGS -D_GNU_SOURCE -fPIC -fwrapv"
-export LINKCC="gcc"
 export CFLAGS="$CFLAGS $(pkg-config --cflags openssl)"
 export LDFLAGS="$RPM_LD_FLAGS %{?el6:-Wl,-rpath,/usr/local/openresty/openssl/lib} -g $(pkg-config --libs-only-L openssl)"
 export LDFLAGS_NODIST="$RPM_LD_FLAGS %{?el6:-Wl,-rpath,/usr/local/openresty/openssl/lib}%{?with_no_semantic_interposition: -fno-semantic-interposition} -g $(pkg-config --libs-only-L openssl)"
@@ -1601,6 +1607,9 @@ CheckPython optimized
 # ======================================================
 
 %changelog
+* Mon May 25 2020 Anton Samets <sharewax@gmail.com> - 3.8.3-2
+- python38  CentOS 7 build
+
 * Thu May 21 2020 Timothy Lusk <tlusk@carbonblack.com> - 3.8.3-1a.cb
 - Merge upstream Fedora 3.8.3-1 changes
 
